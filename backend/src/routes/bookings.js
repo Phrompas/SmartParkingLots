@@ -1,26 +1,80 @@
 import { Router } from "express";
 import crypto from "crypto";
-import { pool } from "../db.js"; // fixed path
+import { pool } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
 import { computeFee } from "../routes/pricing.js";
-import { client as mqttClient, publish } from "../mqtt.js";
+import { publish, getLatestSlotStatus } from "../mqtt.js";
 
 const r = Router();
+
+// --- MQTT slot helpers ---
+const slotOf = (spaceId) => `slot${String(spaceId).padStart(2, "0")}`;
+const cmdTopicOf = (spaceId) => `parking/${slotOf(spaceId)}/cmd`;
+
+const publishSlotCmd = (spaceId, payload) => {
+  try {
+    publish(cmdTopicOf(spaceId), {
+      slotId: slotOf(spaceId),
+      source: "backend",
+      ts: Date.now(),
+      ...payload,
+    });
+  } catch (e) {
+    console.error("[MQTT] Failed to publish cmd:", e);
+  }
+};
+
+const publishSlotCancel = (spaceId, userId) => {
+  publishSlotCmd(spaceId, { action: "cancel", userId: String(userId) });
+};
+
+const publishSlotExpire = (spaceId, userId) => {
+  publishSlotCmd(spaceId, { action: "expire", userId: String(userId) });
+};
 
 // --- helpers ---
 const getUserId = (req) => Number(req.user?.user_id || req.user?.id);
 
-// Overlap check for a time range
+const getSensorReadyState = (snapshot) => {
+  const state = String(snapshot?.state || "").toLowerCase();
+
+  return (
+    state === "wait_confirm" ||
+    state === "occupied_reserved" ||
+    state === "occupied"
+  );
+};
+
+const toSensorPayload = (snapshot) =>
+  snapshot
+    ? {
+        slotId: snapshot.slotId,
+        state: snapshot.state,
+        userId: snapshot.userId || null,
+        remainingMs: snapshot.remainingMs ?? null,
+        receivedAt: snapshot.receivedAt || null,
+      }
+    : null;
+
 const overlapSQL =
   "SELECT 1 FROM reservations WHERE space_id=$1 AND status IN ('reserved','checked-in') AND NOT( end_time<=$2 OR start_time>=$3 ) LIMIT 1";
 
-// Expire past-due reservations and free spaces with no active booking
+// Expire ONLY reservations that never checked-in
 const expireAndFreeSpaces = async () => {
-  // mark overdue active reservations as expired
-  await pool.query(
-    "UPDATE reservations SET status='expired' WHERE end_time < NOW() AND status IN ('reserved','checked-in')"
+  const { rows: toExpire } = await pool.query(
+    "SELECT reservation_id, user_id, space_id FROM reservations WHERE end_time < NOW() AND status='reserved'"
   );
-  // any space that has no active reservation becomes available
+
+  if (toExpire.length) {
+    await pool.query(
+      "UPDATE reservations SET status='expired' WHERE end_time < NOW() AND status='reserved'"
+    );
+
+    for (const row of toExpire) {
+      publishSlotExpire(row.space_id, row.user_id);
+    }
+  }
+
   await pool.query(
     `UPDATE parkingspaces p
        SET current_state='available'
@@ -35,70 +89,144 @@ const expireAndFreeSpaces = async () => {
 
 // --- Create booking ---
 r.post("/", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
   try {
-    // housekeeping: auto-expire and free spaces before new booking to reduce false conflicts
     await expireAndFreeSpaces();
 
     const { space_id, start_time, end_time, deposit_amount = 50 } = req.body;
     if (!space_id || !start_time || !end_time) {
-      return res.status(400).json({ message: "Missing space_id, start_time or end_time" });
+      return res.status(400).json({
+        message: "Missing space_id, start_time or end_time",
+      });
     }
-
-    // check availability window
-    const { rows: conflict } = await pool.query(overlapSQL, [space_id, start_time, end_time]);
-    if (conflict.length) return res.status(409).json({ message: "Time slot not available" });
 
     const qr = crypto.randomBytes(8).toString("hex");
     const userId = getUserId(req);
 
-    // check wallet balance
-    const { rows: userRows } = await pool.query("SELECT wallet_balance FROM users WHERE user_id=$1", [userId]);
-    const user = userRows[0];
-    if (!user) return res.status(404).json({ message: "User not found" });
-    if (Number(user.wallet_balance) < deposit_amount)
-      return res.status(402).json({ message: "Insufficient wallet balance" });
+    let reservationId;
 
-    // deduct deposit and record transaction
-    await pool.query("UPDATE users SET wallet_balance = wallet_balance - $1 WHERE user_id=$2", [
-      deposit_amount,
-      userId,
-    ]);
-    await pool.query(
-      "INSERT INTO wallettransactions (user_id, tx_type, amount, note) VALUES ($1, 'hold', $2, 'Deposit hold for booking')",
-      [userId, deposit_amount]
-    );
+    try {
+      await client.query("BEGIN");
 
-    const { rows: inserted } = await pool.query(
-      `INSERT INTO reservations
-         (user_id, space_id, qr_code, deposit_amount, deposit_status,
-          start_time, end_time, auth_method, status)
-       VALUES ($1,$2,$3,$4,'held',$5,$6,'sensor','reserved')
-       RETURNING reservation_id`,
-      [userId, space_id, qr, deposit_amount, start_time, end_time]
-    );
+      const { rows: userRows } = await client.query(
+        "SELECT wallet_balance FROM users WHERE user_id=$1 FOR UPDATE",
+        [userId]
+      );
 
-    await pool.query("UPDATE parkingspaces SET current_state='reserved' WHERE space_id=$1", [space_id]);
+      const user = userRows[0];
+      if (!user) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "User not found" });
+      }
 
-    publish("smartparking/slot1/reservationStatus", String(userId));
-    res.json({ ok: true, reservation_id: inserted[0].reservation_id, qr_code: qr });
+      if (Number(user.wallet_balance) < deposit_amount) {
+        await client.query("ROLLBACK");
+        return res.status(402).json({ message: "Insufficient wallet balance" });
+      }
+
+      const { rows: spaceRows } = await client.query(
+        "SELECT space_id, current_state FROM parkingspaces WHERE space_id=$1 FOR UPDATE",
+        [space_id]
+      );
+
+      const space = spaceRows[0];
+      if (!space) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "Parking space not found" });
+      }
+
+      if (space.current_state !== "available") {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ message: "Parking space is not available" });
+      }
+
+      const { rows: conflict } = await client.query(overlapSQL, [
+        space_id,
+        start_time,
+        end_time,
+      ]);
+
+      if (conflict.length) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ message: "Time slot not available" });
+      }
+
+      await client.query(
+        "UPDATE users SET wallet_balance = wallet_balance - $1 WHERE user_id=$2",
+        [deposit_amount, userId]
+      );
+
+      await client.query(
+        "INSERT INTO wallettransactions (user_id, tx_type, amount, note) VALUES ($1, 'hold', $2, 'Deposit hold for booking')",
+        [userId, deposit_amount]
+      );
+
+      const { rows: inserted } = await client.query(
+        `INSERT INTO reservations
+           (user_id, space_id, qr_code, deposit_amount, deposit_status,
+            start_time, end_time, auth_method, status)
+         VALUES ($1,$2,$3,$4,'held',$5,$6,'sensor','reserved')
+         RETURNING reservation_id`,
+        [userId, space_id, qr, deposit_amount, start_time, end_time]
+      );
+
+      reservationId = inserted[0].reservation_id;
+
+      await client.query(
+        "UPDATE parkingspaces SET current_state='reserved' WHERE space_id=$1",
+        [space_id]
+      );
+
+      await client.query("COMMIT");
+    } catch (txErr) {
+      await client.query("ROLLBACK");
+      throw txErr;
+    }
+
+    publishSlotCmd(space_id, {
+      action: "reserve",
+      userId: String(userId),
+    });
+
+    return res.json({
+      ok: true,
+      reservation_id: reservationId,
+      qr_code: qr,
+      status: "reserved",
+      sensor: null,
+      can_check_in: false,
+      canCheckIn: false,
+    });
   } catch (e) {
-    res.status(500).json({ message: "Failed to create booking", error: e.message });
+    return res.status(500).json({
+      message: "Failed to create booking",
+      error: e.message,
+    });
+  } finally {
+    client.release();
   }
 });
 
-// --- List all bookings for the user (descending) ---
+// --- List all bookings for the user ---
 r.get("/", requireAuth, async (req, res) => {
   try {
     const userId = getUserId(req);
     const { rows } = await pool.query(
       `SELECT r.*, p.location_id, p.floor_number, p.space_number
-       FROM reservations r JOIN parkingspaces p ON r.space_id=p.space_id
-       WHERE r.user_id=$1 ORDER BY r.created_at DESC`,
+       FROM reservations r
+       JOIN parkingspaces p ON r.space_id=p.space_id
+       WHERE r.user_id=$1
+       ORDER BY r.created_at DESC`,
       [userId]
     );
-    res.json(rows);
+
+    return res.json(rows);
   } catch (e) {
-    res.status(500).json({ message: "Failed to load bookings", error: e.message });
+    return res.status(500).json({
+      message: "Failed to load bookings",
+      error: e.message,
+    });
   }
 });
 
@@ -118,22 +246,42 @@ r.get("/me/current", requireAuth, async (req, res) => {
        LIMIT 1`,
       [userId]
     );
+
     const row = rows[0] || null;
     if (!row) return res.json(null);
 
+    const slotId = slotOf(row.space_id);
+    const snapshot = getLatestSlotStatus(slotId);
+    const sensorReady = getSensorReadyState(snapshot);
+
+    const effectiveStatus =
+      row.status === "reserved" && sensorReady ? "wait_confirm" : row.status;
+
     const now = new Date();
     const checkedInAt = row.checked_in_at || null;
-    const elapsed = checkedInAt ? Math.floor((now - new Date(checkedInAt)) / 1000) : 0;
-    const estimate = checkedInAt ? await computeFee(pool, checkedInAt, null) : 0;
+    const elapsed = checkedInAt
+      ? Math.floor((now - new Date(checkedInAt)) / 1000)
+      : 0;
 
-    res.json({
+    const estimate = checkedInAt
+      ? await computeFee(pool, checkedInAt, null)
+      : 0;
+
+    return res.json({
       ...row,
+      status: effectiveStatus,
       server_now: now.toISOString(),
       elapsed_seconds: elapsed,
       fee_estimate: estimate,
+      can_check_in: row.status === "reserved" && sensorReady,
+      canCheckIn: row.status === "reserved" && sensorReady,
+      sensor: toSensorPayload(snapshot),
     });
   } catch (e) {
-    res.status(500).json({ message: "Failed to load current booking", error: e.message });
+    return res.status(500).json({
+      message: "Failed to load current booking",
+      error: e.message,
+    });
   }
 });
 
@@ -155,13 +303,17 @@ r.get("/me/history", requireAuth, async (req, res) => {
         LIMIT $2 OFFSET $3`,
       [userId, limit, offset]
     );
-    res.json(rows);
+
+    return res.json(rows);
   } catch (e) {
-    res.status(500).json({ message: "Failed to load history", error: e.message });
+    return res.status(500).json({
+      message: "Failed to load history",
+      error: e.message,
+    });
   }
 });
 
-// Alias: GET /bookings/history (same result as /me/history)
+// Alias: GET /bookings/history
 r.get("/history", requireAuth, async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -179,13 +331,17 @@ r.get("/history", requireAuth, async (req, res) => {
         LIMIT $2 OFFSET $3`,
       [userId, limit, offset]
     );
-    res.json(rows);
+
+    return res.json(rows);
   } catch (e) {
-    res.status(500).json({ message: "Failed to load history", error: e.message });
+    return res.status(500).json({
+      message: "Failed to load history",
+      error: e.message,
+    });
   }
 });
 
-// --- Check-in (after QR scan) ---
+// --- Check-in ---
 r.post("/:id/checkin", requireAuth, async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -193,35 +349,109 @@ r.post("/:id/checkin", requireAuth, async (req, res) => {
     const { qr_code } = req.body || {};
 
     const { rows: rrows } = await pool.query(
-      `SELECT r.*, p.current_state FROM reservations r JOIN parkingspaces p ON r.space_id=p.space_id WHERE r.reservation_id=$1 AND r.user_id=$2 LIMIT 1`,
+      `SELECT r.*, p.current_state
+         FROM reservations r
+         JOIN parkingspaces p ON r.space_id=p.space_id
+        WHERE r.reservation_id=$1
+          AND r.user_id=$2
+        LIMIT 1`,
       [id, userId]
     );
+
     const row = rrows[0];
 
     if (!row) return res.status(404).json({ message: "Reservation not found" });
-    if (row.status !== "reserved" && row.status !== "checked-in") {
+
+    if (row.status === "checked-in") {
+      return res.json({
+        ok: true,
+        status: "checked-in",
+        checked_in_at: row.checked_in_at,
+        sensor: toSensorPayload(getLatestSlotStatus(slotOf(row.space_id))),
+        can_check_in: false,
+        canCheckIn: false,
+      });
+    }
+
+    if (row.status !== "reserved") {
       return res.status(400).json({ message: "Reservation is not active" });
     }
+
     if (new Date(row.end_time) <= new Date()) {
       return res.status(400).json({ message: "Reservation expired" });
     }
+
     if (qr_code && qr_code !== row.qr_code) {
       return res.status(400).json({ message: "Invalid QR code" });
     }
 
-    await pool.query(
-      "UPDATE reservations SET status='checked-in', checked_in_at=COALESCE(checked_in_at, NOW()) WHERE reservation_id=$1",
+    const slotId = slotOf(row.space_id);
+    const snapshot = getLatestSlotStatus(slotId);
+
+    if (!snapshot) {
+      return res.status(409).json({
+        message: "No live sensor status for this slot yet",
+        slotId,
+        sensorReady: false,
+      });
+    }
+
+    const sensorState = String(snapshot.state || "unknown").toLowerCase();
+    const sensorUserId = snapshot.userId ? String(snapshot.userId) : null;
+    const currentUserId = String(userId);
+
+    const canConfirm = getSensorReadyState(snapshot);
+
+    if (!canConfirm) {
+      return res.status(409).json({
+        message: `Cannot confirm while slot is ${sensorState}`,
+        slotId,
+        sensorReady: true,
+        currentState: sensorState,
+      });
+    }
+
+    if (sensorUserId && sensorUserId !== currentUserId) {
+      return res.status(403).json({
+        message: "Sensor user does not match current user",
+        slotId,
+        sensorReady: true,
+        currentState: sensorState,
+      });
+    }
+
+    const { rows: updatedRows } = await pool.query(
+      `UPDATE reservations
+          SET status='checked-in',
+              checked_in_at=COALESCE(checked_in_at, NOW())
+        WHERE reservation_id=$1
+        RETURNING checked_in_at`,
       [id]
     );
-    await pool.query("UPDATE parkingspaces SET current_state='occupied' WHERE space_id=$1", [row.space_id]);
 
-    publish("smartparking/slot1/status", "occupied");
-    publish("smartparking/slot1/confirmedParkID", String(userId));
-    publish("smartparking/slot1/reservationStatus", String(userId));
+    await pool.query(
+      "UPDATE parkingspaces SET current_state='occupied' WHERE space_id=$1",
+      [row.space_id]
+    );
 
-    res.json({ ok: true });
+    publishSlotCmd(row.space_id, {
+      action: "confirm",
+      userId: String(userId),
+    });
+
+    return res.json({
+      ok: true,
+      status: "checked-in",
+      checked_in_at: updatedRows[0]?.checked_in_at || new Date().toISOString(),
+      sensor: toSensorPayload(snapshot),
+      can_check_in: false,
+      canCheckIn: false,
+    });
   } catch (e) {
-    res.status(500).json({ message: "Failed to check in", error: e.message });
+    return res.status(500).json({
+      message: "Failed to check in",
+      error: e.message,
+    });
   }
 });
 
@@ -232,34 +462,53 @@ r.post("/:id/cancel", requireAuth, async (req, res) => {
     const { id } = req.params;
 
     const { rows: crow } = await pool.query(
-      `SELECT r.*, p.current_state FROM reservations r JOIN parkingspaces p ON r.space_id=p.space_id WHERE r.reservation_id=$1 AND r.user_id=$2 LIMIT 1`,
+      `SELECT r.*, p.current_state
+         FROM reservations r
+         JOIN parkingspaces p ON r.space_id=p.space_id
+        WHERE r.reservation_id=$1
+          AND r.user_id=$2
+        LIMIT 1`,
       [id, userId]
     );
+
     const row = crow[0];
 
     if (!row) return res.status(404).json({ message: "Reservation not found" });
-    if (row.status === "cancelled" || row.status === "expired" || row.status === "completed") {
-      return res.json({ ok: true }); // already terminal
+
+    if (
+      row.status === "cancelled" ||
+      row.status === "expired" ||
+      row.status === "completed"
+    ) {
+      return res.json({ ok: true, status: row.status });
     }
 
-    await pool.query("UPDATE reservations SET status='cancelled' WHERE reservation_id=$1", [id]);
+    await pool.query(
+      "UPDATE reservations SET status='cancelled' WHERE reservation_id=$1",
+      [id]
+    );
 
     const { rows: active } = await pool.query(overlapSQL, [
       row.space_id,
       new Date().toISOString(),
       row.end_time,
     ]);
+
     if (!active.length) {
-      await pool.query("UPDATE parkingspaces SET current_state='available' WHERE space_id=$1", [row.space_id]);
+      await pool.query(
+        "UPDATE parkingspaces SET current_state='available' WHERE space_id=$1",
+        [row.space_id]
+      );
     }
 
-    publish("smartparking/slot1/status", "available");
-    publish("smartparking/slot1/reservationStatus", "NONE");
-    publish("smartparking/slot1/confirmedParkID", "NONE");
+    publishSlotCancel(row.space_id, userId);
 
-    res.json({ ok: true });
+    return res.json({ ok: true, status: "cancelled" });
   } catch (e) {
-    res.status(500).json({ message: "Failed to cancel booking", error: e.message });
+    return res.status(500).json({
+      message: "Failed to cancel booking",
+      error: e.message,
+    });
   }
 });
 
@@ -267,18 +516,25 @@ r.post("/:id/cancel", requireAuth, async (req, res) => {
 r.post("/:id/complete", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const authUserId = getUserId(req);
 
-    // Ensure the reservation belongs to the authenticated user
     const { rows: rrows } = await pool.query(
-      `SELECT reservation_id, user_id, space_id, status, checked_in_at, start_time, deposit_amount, deposit_status
+      `SELECT reservation_id, user_id, space_id, status, checked_in_at,
+              start_time, deposit_amount, deposit_status
          FROM reservations
-        WHERE reservation_id=$1 AND user_id=$2`,
-      [id, getUserId(req)]
+        WHERE reservation_id=$1
+          AND user_id=$2`,
+      [id, authUserId]
     );
+
     const rdata = rrows[0];
+
     if (!rdata) return res.status(404).json({ message: "Reservation not found" });
+
     if (rdata.status !== "checked-in" || !rdata.checked_in_at) {
-      return res.status(400).json({ message: "Cannot complete booking that is not checked-in" });
+      return res.status(400).json({
+        message: "Cannot complete booking that is not checked-in",
+      });
     }
 
     const now = new Date();
@@ -294,60 +550,74 @@ r.post("/:id/complete", requireAuth, async (req, res) => {
     let extra = 0;
 
     if (totalFee > deposit) {
-      // charge extra from wallet
       extra = totalFee - deposit;
+
       await pool.query(
         "UPDATE users SET wallet_balance = wallet_balance - $1 WHERE user_id=$2",
         [extra, userId]
       );
+
       await pool.query(
         `INSERT INTO wallettransactions (user_id, reservation_id, tx_type, amount, note)
          VALUES ($1, $2, 'debit', $3, 'Parking fee exceeds deposit')`,
         [userId, id, extra]
       );
+
       await pool.query(
         "UPDATE reservations SET deposit_status='captured' WHERE reservation_id=$1",
         [id]
       );
     } else {
-      // release remaining deposit back to wallet
       refund = deposit - totalFee;
+
       if (refund > 0) {
         await pool.query(
           "UPDATE users SET wallet_balance = wallet_balance + $1 WHERE user_id=$2",
           [refund, userId]
         );
+
         await pool.query(
           `INSERT INTO wallettransactions (user_id, reservation_id, tx_type, amount, note)
            VALUES ($1, $2, 'release', $3, 'Refund remaining deposit')`,
           [userId, id, refund]
         );
       }
+
       await pool.query(
         "UPDATE reservations SET deposit_status='released' WHERE reservation_id=$1",
         [id]
       );
     }
 
-    // mark reservation completed and free the space
     await pool.query(
       `UPDATE reservations
-          SET status='completed', checked_out_at=NOW(), total_fee=$1
+          SET status='completed',
+              checked_out_at=NOW(),
+              total_fee=$1
         WHERE reservation_id=$2`,
       [totalFee, id]
     );
+
     await pool.query(
       "UPDATE parkingspaces SET current_state='available' WHERE space_id=$1",
       [rdata.space_id]
     );
 
-    publish("smartparking/slot1/status", "available");
-    publish("smartparking/slot1/reset", "true");
+    publishSlotCancel(rdata.space_id, userId);
 
-    res.json({ ok: true, total_fee: totalFee, extra_due: extra, refund_amount: refund });
+    return res.json({
+      ok: true,
+      status: "completed",
+      total_fee: totalFee,
+      extra_due: extra,
+      refund_amount: refund,
+    });
   } catch (e) {
     console.error("Complete booking error:", e);
-    res.status(500).json({ message: "Failed to complete booking", error: e.message });
+    return res.status(500).json({
+      message: "Failed to complete booking",
+      error: e.message,
+    });
   }
 });
 

@@ -1,5 +1,5 @@
-import mqtt from "mqtt";
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: new URL("../.env", import.meta.url) });
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
@@ -7,16 +7,8 @@ import auth from "./routes/auth.js";
 import spaces from "./routes/spaces.js";
 import bookings from "./routes/bookings.js";
 import users from "./routes/users.js";
-
-const mqttClient = mqtt.connect("mqtt://localhost:1883"); // ปรับ host ตาม broker ที่ใช้
-
-mqttClient.on("connect", () => {
-  console.log("✅ MQTT connected");
-});
-
-mqttClient.on("error", (err) => {
-  console.error("❌ MQTT connection error:", err);
-});
+import adminRoutes from "./routes/admin.js";
+import { client as mqttClient } from "./mqtt.js";
 
 const app = express();
 app.locals.mqttClient = mqttClient;
@@ -26,6 +18,9 @@ app.use(morgan("dev"));
 
 // middleware ตรวจสอบ mqtt เชื่อมต่อ
 app.use((req, res, next) => {
+  // Allow auth routes even if MQTT is down (so users can still login/register)
+  if (req.path.startsWith("/auth")) return next();
+
   if (!app.locals.mqttClient?.connected) {
     return res.status(503).json({ error: "MQTT broker unavailable" });
   }
@@ -33,6 +28,7 @@ app.use((req, res, next) => {
 });
 
 app.get("/", (req,res)=>res.json({ok:true, service:"smart-parking-api"}));
+app.use("/admin", adminRoutes);
 app.use("/auth", auth);
 app.use("/users", users);
 app.use("/spaces", spaces);

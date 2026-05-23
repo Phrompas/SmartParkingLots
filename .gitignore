@@ -1,0 +1,19 @@
+# Dependency folders
+node_modules/
+jspm_packages/
+
+# Environment variables (Security!)
+.env
+.env.local
+
+# Debug logs
+npm-debug.log*
+yarn-error.log*
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Build folders
+/build
+/dist

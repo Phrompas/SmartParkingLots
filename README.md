@@ -25,11 +25,11 @@
   cd backend
   npm install
 
-.env
-PORT=4000
-DATABASE_URL=postgres://user:password@localhost:5432/smartparking
-JWT_SECRET=supersecret
-MQTT_BROKER_URL=mqtt://localhost:1883
+.env/n
+PORT=/n
+DATABASE_URL=/n
+JWT_SECRET=/n
+MQTT_BROKER_URL=/n
 
 รัน Backend
   npm run dev

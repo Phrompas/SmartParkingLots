@@ -25,12 +25,6 @@
   cd backend
   npm install
 
-.env
-PORT=
-DATABASE_URL=
-JWT_SECRET=
-MQTT_BROKER_URL=
-
 รัน Backend
   npm run dev
 

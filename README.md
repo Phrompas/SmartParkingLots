@@ -37,11 +37,7 @@ MQTT_BROKER_URL=mqtt://localhost:1883
 4.Database (PostgreSQL)
   CREATE DATABASE smartparking;
 
-5.Node-RED
-  npm install -g node-red
-  node-red
-
-6.Forntend(React Native / Expo)
+5.Forntend(React Native / Expo)
   cd app
   npm install
 

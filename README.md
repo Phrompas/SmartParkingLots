@@ -26,10 +26,10 @@
   npm install
 
 .env/n
-PORT=/n
-DATABASE_URL=/n
-JWT_SECRET=/n
-MQTT_BROKER_URL=/n
+PORT=\n
+DATABASE_URL=\n
+JWT_SECRET=\n
+MQTT_BROKER_URL=\n
 
 รัน Backend
   npm run dev

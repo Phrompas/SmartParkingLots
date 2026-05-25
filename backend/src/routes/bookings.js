@@ -149,7 +149,7 @@ r.post("/", requireAuth, async (req, res) => {
 
       if (conflict.length) {
         await client.query("ROLLBACK");
-        return res.status(409).json({ message: "Time slot not available" });
+        return res.status(409).json({ message: "หมดเวลาในการยืนยัน" });
       }
 
       await client.query(
@@ -374,15 +374,15 @@ r.post("/:id/checkin", requireAuth, async (req, res) => {
     }
 
     if (row.status !== "reserved") {
-      return res.status(400).json({ message: "Reservation is not active" });
+      return res.status(400).json({ message: "การจองไม่ทำงาน" });
     }
 
     if (new Date(row.end_time) <= new Date()) {
-      return res.status(400).json({ message: "Reservation expired" });
+      return res.status(400).json({ message: "การจองหมดอายุแล้ว" });
     }
 
     if (qr_code && qr_code !== row.qr_code) {
-      return res.status(400).json({ message: "Invalid QR code" });
+      return res.status(400).json({ message: "รหัส QR ไม่ถูกต้อง" });
     }
 
     const slotId = slotOf(row.space_id);
@@ -390,7 +390,7 @@ r.post("/:id/checkin", requireAuth, async (req, res) => {
 
     if (!snapshot) {
       return res.status(409).json({
-        message: "No live sensor status for this slot yet",
+        message: "ยังไม่มีสถานะเซ็นเซอร์แบบเรียลไทม์สำหรับช่องนี้",
         slotId,
         sensorReady: false,
       });
@@ -404,7 +404,7 @@ r.post("/:id/checkin", requireAuth, async (req, res) => {
 
     if (!canConfirm) {
       return res.status(409).json({
-        message: `Cannot confirm while slot is ${sensorState}`,
+        message: `ไม่สามารถยืนยันได้ในขณะที่ช่องว่างอยู่ ${sensorState}`,
         slotId,
         sensorReady: true,
         currentState: sensorState,
@@ -413,7 +413,7 @@ r.post("/:id/checkin", requireAuth, async (req, res) => {
 
     if (sensorUserId && sensorUserId !== currentUserId) {
       return res.status(403).json({
-        message: "Sensor user does not match current user",
+        message: "ชื่อผู้ใช้เซ็นเซอร์ไม่ตรงกับผู้ใช้ปัจจุบัน",
         slotId,
         sensorReady: true,
         currentState: sensorState,
@@ -473,7 +473,7 @@ r.post("/:id/cancel", requireAuth, async (req, res) => {
 
     const row = crow[0];
 
-    if (!row) return res.status(404).json({ message: "Reservation not found" });
+    if (!row) return res.status(404).json({ message: "ไม่พบการจอง" });
 
     if (
       row.status === "cancelled" ||
@@ -506,7 +506,7 @@ r.post("/:id/cancel", requireAuth, async (req, res) => {
     return res.json({ ok: true, status: "cancelled" });
   } catch (e) {
     return res.status(500).json({
-      message: "Failed to cancel booking",
+      message: "ไม่สามารถยกเลิกการจองได้",
       error: e.message,
     });
   }
@@ -529,7 +529,7 @@ r.post("/:id/complete", requireAuth, async (req, res) => {
 
     const rdata = rrows[0];
 
-    if (!rdata) return res.status(404).json({ message: "Reservation not found" });
+    if (!rdata) return res.status(404).json({ message: "ไม่สามารถยกเลิกการจองได้" });
 
     if (rdata.status !== "checked-in" || !rdata.checked_in_at) {
       return res.status(400).json({

@@ -263,8 +263,24 @@ r.get("/me/current", requireAuth, async (req, res) => {
       ? Math.floor((now - new Date(checkedInAt)) / 1000)
       : 0;
 
+    let discountMinutes = 0;
+
+    if (row?.reservation_id) {
+      const { rows: discountRows } = await pool.query(
+        `
+    SELECT COALESCE(SUM(discount_minutes), 0) AS discount_minutes
+    FROM discount_codes
+    WHERE reservation_id=$1
+      AND is_used=true
+    `,
+        [row.reservation_id]
+      );
+
+      discountMinutes = Number(discountRows[0]?.discount_minutes || 0);
+    }
+
     const estimate = checkedInAt
-      ? await computeFee(pool, checkedInAt, null)
+      ? await computeFee(pool, checkedInAt, null, discountMinutes)
       : 0;
 
     return res.json({
@@ -273,6 +289,7 @@ r.get("/me/current", requireAuth, async (req, res) => {
       server_now: now.toISOString(),
       elapsed_seconds: elapsed,
       fee_estimate: estimate,
+      discount_minutes: discountMinutes,
       can_check_in: row.status === "reserved" && sensorReady,
       canCheckIn: row.status === "reserved" && sensorReady,
       sensor: toSensorPayload(snapshot),

@@ -268,8 +268,11 @@ export default function ToolsScreen() {
             borderTopWidth: 1,
             borderColor: "#EEE"
           }}
-        >
 
+        >
+          <Text style={styles.cardTitle}>
+            แก้ไขค่าจอดรถ
+          </Text>
           <Text style={styles.label}>
 
             ฟรีกี่นาที
@@ -401,48 +404,6 @@ export default function ToolsScreen() {
             </Text>
 
           </Pressable>
-
-          <TextInput
-            value={freeMinutes}
-            onChangeText={setFreeMinutes}
-            style={styles.input}
-            placeholder="ฟรี"
-          />
-
-          <TextInput
-            value={billingBlockMin}
-            onChangeText={setBillingBlockMin}
-            style={styles.input}
-            placeholder="คิดทุก"
-          />
-
-          <TextInput
-            value={ratePer30Min}
-            onChangeText={setRatePer30Min}
-            style={styles.input}
-            placeholder="ราคา"
-          />
-
-          <TextInput
-            value={dailyMax}
-            onChangeText={setDailyMax}
-            style={styles.input}
-            placeholder="สูงสุด"
-          />
-
-          <Pressable
-            onPress={handleUpdateParkingFee}
-            style={[
-              styles.btn,
-              styles.btnPrimary,
-              { marginTop: 10 }
-            ]}
-          >
-            <Text style={styles.btnText}>
-              บันทึก
-            </Text>
-          </Pressable>
-
         </View>
 
         {!!msg && <Text style={[styles.msg, msg.startsWith("❌") && styles.msgError]}>{msg}</Text>}
@@ -451,7 +412,7 @@ export default function ToolsScreen() {
           * ระบบจะตรวจสิทธิ์และสถานะเซนเซอร์ก่อนส่งคำสั่งไปยังอุปกรณ์
         </Text>
       </View>
-    </ScrollView>
+    </ScrollView >
   );
 }
 
@@ -511,6 +472,11 @@ const styles = StyleSheet.create({
   btnDisabledGhost: { opacity: 0.6 },
   btnGhost: { borderWidth: 1, borderColor: "#EEE", backgroundColor: "#FFF" },
   btnGhostText: { color: ORANGE },
+  singleBtn: {
+
+    marginTop: 12,
+
+  },
 
   msg: { marginTop: 10, color: "#111", fontWeight: "800", lineHeight: 20 },
   msgError: { color: RED },

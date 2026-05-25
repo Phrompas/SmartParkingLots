@@ -2,7 +2,10 @@ import { Router } from "express";
 import crypto from "crypto";
 import { pool } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
-import { computeFee } from "../routes/pricing.js";
+import {
+  computeFee,
+  computeFeeDetail
+} from "../routes/pricing.js";
 import { publish, getLatestSlotStatus } from "../mqtt.js";
 
 const r = Router();
@@ -279,17 +282,59 @@ r.get("/me/current", requireAuth, async (req, res) => {
       discountMinutes = Number(discountRows[0]?.discount_minutes || 0);
     }
 
-    const estimate = checkedInAt
-      ? await computeFee(pool, checkedInAt, null, discountMinutes)
-      : 0;
+    let feeDetail = {
+
+      fee: 0,
+
+      free_remaining_minutes: 0,
+
+      total_free_minutes: 0
+
+    };
+
+    if (checkedInAt) {
+
+      feeDetail =
+
+        await computeFeeDetail(
+
+          pool,
+
+          checkedInAt,
+
+          null,
+
+          discountMinutes
+
+        );
+
+    }
 
     return res.json({
+
       ...row,
+
       status: effectiveStatus,
+
       server_now: now.toISOString(),
+
       elapsed_seconds: elapsed,
-      fee_estimate: estimate,
-      discount_minutes: discountMinutes,
+
+      fee_estimate:
+
+        feeDetail.fee,
+
+      free_remaining_minutes:
+
+        feeDetail.free_remaining_minutes,
+
+      total_free_minutes:
+
+        feeDetail.total_free_minutes,
+
+      extra_free_minutes:
+
+        discountMinutes,
       can_check_in: row.status === "reserved" && sensorReady,
       canCheckIn: row.status === "reserved" && sensorReady,
       sensor: toSensorPayload(snapshot),

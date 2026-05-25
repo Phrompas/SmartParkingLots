@@ -21,7 +21,7 @@ import api from "../api";
 dayjs.extend(duration);
 
 const ORANGE = "#D38C28";
-const GRAY = "#C9CDD2";
+const GRAY = "#4B5563";
 const RED = "#E35545";
 const GREEN = "#16a34a";
 
@@ -86,6 +86,7 @@ export default function LocationsScreen() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [feeEstimate, setFeeEstimate] = useState(0);
   const [discountCode, setDiscountCode] = useState("");
+  const [freeRemainingMinutes, setFreeRemainingMinutes] = useState(0);
 
   const refreshBookingFromServer = async () => {
     try {
@@ -136,6 +137,9 @@ export default function LocationsScreen() {
         setUiState("parked");
         setCheckedInAt(data.checked_in_at);
         setFeeEstimate(Number(data.fee_estimate || 0));
+        setFreeRemainingMinutes(
+          Number(data.free_remaining_minutes || 0)
+        );
 
         const base = new Date(data.checked_in_at).getTime();
         setElapsedSec(Math.floor((Date.now() - base) / 1000));
@@ -182,7 +186,15 @@ export default function LocationsScreen() {
           refresher = setInterval(async () => {
             try {
               const { data: d2 } = await api.get("/bookings/me/current");
-              setFeeEstimate(Number(d2?.fee_estimate || 0));
+              setFeeEstimate(
+                Number(d2?.fee_estimate || 0)
+              );
+
+              setFreeRemainingMinutes(
+                Number(
+                  d2?.free_remaining_minutes || 0
+                )
+              );
             } catch { }
           }, 60000);
         }
@@ -601,7 +613,7 @@ export default function LocationsScreen() {
             </Pressable>
           ) : (
             <View style={[styles.centerCta, styles.centerCtaDisabled]}>
-              <Text style={styles.centerCtaText}>รอรถเข้าช่องจอด</Text>
+              <Text style={styles.centerCtaText}>นำรถเข้าช่องจอดเพื่อยืนยัน</Text>
             </View>
           )}
 
@@ -609,7 +621,7 @@ export default function LocationsScreen() {
             {remaining
               ? canConfirmParking
                 ? `พร้อมยืนยัน • หมดเวลาใน ${remaining}`
-                : `ระบบกำลังรอข้อมูลจากเซนเซอร์ • หมดเวลาใน ${remaining}`
+                : `กรุณานำรถเข้าช่องจอด • เหลือเวลา ${remaining}`
               : "กำลังคำนวณเวลา..."}
           </Text>
         </View>
@@ -666,10 +678,24 @@ export default function LocationsScreen() {
           <View style={{ width: "100%", paddingHorizontal: 20 }}>
 
             <Text style={styles.parkingSummary}>
+
               เวลาในการจอด: {fmtDuration(elapsedSec)}
+
               {"\n"}
-              ประมาณการ: {feeEstimate.toFixed(2)} บาท
+
+              ค่าบริการ: {feeEstimate.toFixed(2)} บาท
+
             </Text>
+
+            {freeRemainingMinutes > 0 && (
+
+              <Text style={styles.freeText}>
+
+                จอดฟรีได้อีก {freeRemainingMinutes} นาที
+
+              </Text>
+
+            )}
 
             <View style={{ marginTop: 15 }}>
 
@@ -902,7 +928,7 @@ const styles = StyleSheet.create({
   circle: { width: 110, height: 110, borderRadius: 55, borderWidth: 6, borderColor: ORANGE, alignItems: "center", justifyContent: "center" },
   plus: { color: ORANGE, fontSize: 58, fontWeight: "700", lineHeight: 62 },
 
-  countdown: { marginTop: 6, color: "#666", fontWeight: "600" },
+  countdown: { marginTop: 8, color: "#222", fontWeight: "800",fontSize: 15 },
   centerCtaWrap: { alignItems: "center" },
   centerCta: { marginTop: 6, backgroundColor: ORANGE, borderRadius: 16, paddingVertical: 16, paddingHorizontal: 22 },
   centerCtaDisabled: { backgroundColor: GRAY, opacity: 0.7 },
@@ -925,6 +951,13 @@ const styles = StyleSheet.create({
 
   parkingSummary: { marginTop: 6, color: "#444", fontWeight: "700", textAlign: "center", paddingHorizontal: 20, lineHeight: 24 },
 
+  freeText: {
+    marginTop: 8,
+    textAlign: "center",
+    color: GREEN,
+    fontWeight: "800",
+    fontSize: 15
+  },
   modalBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.25)", justifyContent: "flex-end" },
   sheet: { backgroundColor: "#fff", padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: "72%" },
   sheetTitle: { fontSize: 22, fontWeight: "800", color: ORANGE, marginBottom: 10 },

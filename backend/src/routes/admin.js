@@ -1,3 +1,5 @@
+import crypto from "crypto";
+import { pool } from "../db.js";
 import express from "express";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import {
@@ -228,5 +230,127 @@ router.post("/commands", requireAuth, requireAdmin, async (req, res) => {
     return res.status(500).json({ message: "Command failed" });
   }
 });
+
+// POST /admin/discount-codes
+router.post(
+  "/discount-codes",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { discount_minutes = 60 } = req.body || {};
+
+      const code =
+        "PARK-" +
+        crypto.randomBytes(3).toString("hex").toUpperCase();
+
+      const adminId =
+        req.user?.user_id || req.user?.id;
+
+      const { rows } = await pool.query(
+        `
+          INSERT INTO discount_codes
+          (
+            code,
+            discount_minutes,
+            created_by
+          )
+          VALUES ($1,$2,$3)
+          RETURNING *
+          `,
+        [
+          code,
+          discount_minutes,
+          adminId
+        ]
+      );
+
+      return res.json({
+        ok: true,
+        item: rows[0]
+      });
+
+    } catch (err) {
+
+      console.error(
+        "[ADMIN] generate code",
+        err
+      );
+
+      return res.status(500).json({
+        message: "สร้างโค้ดส่วนลดไม่สำเร็จ"
+      });
+    }
+  }
+);
+
+
+// POST /admin/parking-fee
+router.post(
+  "/parking-fee",
+  requireAuth,
+  requireAdmin,
+  async (req, res) => {
+
+    try {
+
+      const {
+        free_minutes,
+        billing_block_min,
+        rate_per_30min,
+        daily_max
+      } = req.body;
+
+      await pool.query(
+        `
+    UPDATE settings
+    SET value_int=$1
+    WHERE key_name='free_minutes'
+    `,
+        [free_minutes]
+      );
+
+      await pool.query(
+        `
+    UPDATE settings
+    SET value_int=$1
+    WHERE key_name='billing_block_min'
+    `,
+        [billing_block_min]
+      );
+
+      await pool.query(
+        `
+    UPDATE settings
+    SET value_decimal=$1
+    WHERE key_name='rate_per_30min'
+    `,
+        [rate_per_30min]
+      );
+
+      await pool.query(
+        `
+    UPDATE settings
+    SET value_decimal=$1
+    WHERE key_name='daily_max'
+    `,
+        [daily_max]
+      );
+
+      return res.json({
+        ok: true,
+        message: "อัปเดตค่าจอดรถสำเร็จ"
+      });
+
+    } catch (err) {
+
+      console.error(err);
+
+      return res.status(500).json({
+        message: "อัปเดตค่าจอดรถไม่สำเร็จ"
+      });
+
+    }
+  });
 
 export default router;

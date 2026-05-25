@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,6 +21,14 @@ export default function ToolsScreen() {
   const [userId, setUserId] = useState("U001");
   const [msg, setMsg] = useState("");
   const [sending, setSending] = useState(false);
+
+  const [discountMinutes, setDiscountMinutes] = useState("60");
+  const [generatedCode, setGeneratedCode] = useState("");
+
+  const [freeMinutes, setFreeMinutes] = useState("0");
+  const [billingBlockMin, setBillingBlockMin] = useState("1");
+  const [ratePer30Min, setRatePer30Min] = useState("5");
+  const [dailyMax, setDailyMax] = useState("100");
 
   const sendCmd = async (action) => {
     if (sending) return;
@@ -64,8 +73,77 @@ export default function ToolsScreen() {
     }
   };
 
+  const handleGenerateCode = async () => {
+    try {
+
+      const { data } = await api.post(
+        "/admin/discount-codes",
+        {
+          discount_minutes:
+            Number(discountMinutes)
+        }
+      );
+
+      setGeneratedCode(
+        data?.item?.code || ""
+      );
+
+      setMsg("✅ สร้างโค้ดสำเร็จ");
+
+    } catch (e) {
+
+      setMsg(
+        `❌ ${e?.response?.data?.message ||
+        "สร้างโค้ดไม่สำเร็จ"
+        }`
+      );
+    }
+  };
+
+  const handleUpdateParkingFee =
+    async () => {
+
+      try {
+
+        await api.post(
+          "/admin/parking-fee",
+          {
+            free_minutes:
+              Number(freeMinutes),
+
+            billing_block_min:
+              Number(billingBlockMin),
+
+            rate_per_30min:
+              Number(ratePer30Min),
+
+            daily_max:
+              Number(dailyMax)
+          }
+        );
+
+        setMsg(
+          "✅ อัปเดตค่าจอดสำเร็จ"
+        );
+
+      } catch (e) {
+
+        setMsg(
+          `❌ ${e?.response?.data?.message ||
+          "อัปเดตค่าจอดไม่สำเร็จ"
+          }`
+        );
+
+      }
+    };
+
   return (
-    <View style={styles.container}>
+
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
       <View style={styles.headerCard}>
         <Text style={styles.title}>เครื่องมือจัดการระบบ</Text>
         <Text style={styles.subtitle}>
@@ -129,18 +207,264 @@ export default function ToolsScreen() {
           </Pressable>
         </View>
 
+        <View
+          style={{
+            marginTop: 25,
+            paddingTop: 20,
+            borderTopWidth: 1,
+            borderColor: "#EEE"
+          }}
+        >
+
+          <Text
+            style={styles.cardTitle}
+          >
+            สร้างโค้ดส่วนลด
+          </Text>
+
+          <TextInput
+            value={discountMinutes}
+            onChangeText={setDiscountMinutes}
+            keyboardType="numeric"
+            style={styles.input}
+            placeholder="60"
+          />
+
+          <Pressable
+            onPress={handleGenerateCode}
+            style={[
+              styles.btn,
+              styles.btnPrimary,
+              { marginTop: 10 }
+            ]}
+          >
+            <Text style={styles.btnText}>
+              สร้างโค้ด
+            </Text>
+          </Pressable>
+
+          {!!generatedCode && (
+
+            <Text
+              style={{
+                marginTop: 10,
+                fontWeight: "800",
+                fontSize: 16
+              }}
+            >
+              Code:
+              {generatedCode}
+            </Text>
+
+          )}
+
+        </View>
+
+
+        <View
+          style={{
+            marginTop: 25,
+            paddingTop: 20,
+            borderTopWidth: 1,
+            borderColor: "#EEE"
+          }}
+        >
+
+          <Text style={styles.label}>
+
+            ฟรีกี่นาที
+
+          </Text>
+
+          <TextInput
+
+            value={freeMinutes}
+
+            onChangeText={setFreeMinutes}
+
+            keyboardType="numeric"
+
+            style={styles.input}
+
+            placeholder="เช่น 15"
+
+          />
+
+          <Text style={styles.inputHint}>
+
+            15 = ฟรี 15 นาทีแรก
+
+          </Text>
+
+          <Text style={styles.label}>
+
+            คิดเงินทุกกี่นาที
+
+          </Text>
+
+          <TextInput
+
+            value={billingBlockMin}
+
+            onChangeText={setBillingBlockMin}
+
+            keyboardType="numeric"
+
+            style={styles.input}
+
+            placeholder="เช่น 30"
+
+          />
+
+          <Text style={styles.inputHint}>
+
+            30 = คิดค่าจอดทุก 30 นาที
+
+          </Text>
+
+          <Text style={styles.label}>
+
+            ราคา/รอบ
+
+          </Text>
+
+          <TextInput
+
+            value={ratePer30Min}
+
+            onChangeText={setRatePer30Min}
+
+            keyboardType="numeric"
+
+            style={styles.input}
+
+            placeholder="เช่น 20"
+
+          />
+
+          <Text style={styles.inputHint}>
+
+            20 = 20 บาทต่อรอบ
+
+          </Text>
+
+          <Text style={styles.label}>
+
+            ราคาสูงสุด
+
+          </Text>
+
+          <TextInput
+
+            value={dailyMax}
+
+            onChangeText={setDailyMax}
+
+            keyboardType="numeric"
+
+            style={styles.input}
+
+            placeholder="เช่น 250"
+
+          />
+
+          <Text style={styles.inputHint}>
+
+            250 = เก็บไม่เกิน 250 บาท
+
+          </Text>
+
+          <Pressable
+
+            onPress={() => {
+
+              void handleUpdateParkingFee();
+
+            }}
+
+            style={[
+
+              styles.btn,
+
+              styles.btnPrimary,
+
+              styles.singleBtn
+
+            ]}
+
+          >
+
+            <Text style={styles.btnText}>
+
+              บันทึกค่าจอดรถ
+
+            </Text>
+
+          </Pressable>
+
+          <TextInput
+            value={freeMinutes}
+            onChangeText={setFreeMinutes}
+            style={styles.input}
+            placeholder="ฟรี"
+          />
+
+          <TextInput
+            value={billingBlockMin}
+            onChangeText={setBillingBlockMin}
+            style={styles.input}
+            placeholder="คิดทุก"
+          />
+
+          <TextInput
+            value={ratePer30Min}
+            onChangeText={setRatePer30Min}
+            style={styles.input}
+            placeholder="ราคา"
+          />
+
+          <TextInput
+            value={dailyMax}
+            onChangeText={setDailyMax}
+            style={styles.input}
+            placeholder="สูงสุด"
+          />
+
+          <Pressable
+            onPress={handleUpdateParkingFee}
+            style={[
+              styles.btn,
+              styles.btnPrimary,
+              { marginTop: 10 }
+            ]}
+          >
+            <Text style={styles.btnText}>
+              บันทึก
+            </Text>
+          </Pressable>
+
+        </View>
+
         {!!msg && <Text style={[styles.msg, msg.startsWith("❌") && styles.msgError]}>{msg}</Text>}
 
         <Text style={styles.hint}>
           * ระบบจะตรวจสิทธิ์และสถานะเซนเซอร์ก่อนส่งคำสั่งไปยังอุปกรณ์
         </Text>
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: BG, padding: 16 },
+  container: {
+    flex: 1,
+    backgroundColor: BG
+  },
+
+  content: {
+    padding: 16,
+    paddingBottom: 40
+  },
 
   headerCard: {
     backgroundColor: "#FFF",
@@ -190,5 +514,11 @@ const styles = StyleSheet.create({
 
   msg: { marginTop: 10, color: "#111", fontWeight: "800", lineHeight: 20 },
   msgError: { color: RED },
+  inputHint: {
+    marginTop: 4,
+    marginBottom: 8,
+    fontSize: 12,
+    color: "#777",
+  },
   hint: { marginTop: 12, color: "#777", fontSize: 12, lineHeight: 18 },
 });

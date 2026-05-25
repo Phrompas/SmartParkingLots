@@ -1,4 +1,9 @@
-export async function computeFee(pool, checkedInAt, endedAt = null) {
+export async function computeFee(
+  pool,
+  checkedInAt,
+  endedAt = null,
+  discountMinutes = 0
+) {
   const query = `
     SELECT
       MAX(CASE WHEN key_name = 'free_minutes' THEN value_int END) AS free_minutes,
@@ -19,7 +24,7 @@ export async function computeFee(pool, checkedInAt, endedAt = null) {
 
   const freeMin = Number(settings.free_minutes ?? 0);
   const blockMin = Number(settings.billing_block_min ?? 1);
-  const ratePer30 = Number(settings.rate_per_30min ?? 5);
+  const ratePerBlock = Number(settings.rate_per_30min ?? 5);
   const dailyMax =
     settings.daily_max != null
       ? Number(settings.daily_max)
@@ -28,11 +33,13 @@ export async function computeFee(pool, checkedInAt, endedAt = null) {
   const start = new Date(checkedInAt);
   const end = endedAt ? new Date(endedAt) : new Date();
 
-  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
     throw new Error("Invalid date input");
   }
 
   let minutes = Math.ceil((end - start) / 60000);
+
+  minutes = Math.max(0, minutes - Number(discountMinutes || 0));
 
   if (minutes <= freeMin) {
     return 0;
@@ -41,11 +48,10 @@ export async function computeFee(pool, checkedInAt, endedAt = null) {
   minutes -= freeMin;
 
   const blocks = Math.ceil(minutes / blockMin);
-
-  let fee = blocks * ratePer30;
+  const fee = blocks * ratePerBlock;
 
   if (dailyMax != null) {
-    fee = Math.min(fee, dailyMax);
+    return Math.max(0, Math.min(fee, dailyMax));
   }
 
   return Math.max(0, fee);

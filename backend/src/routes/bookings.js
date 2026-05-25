@@ -48,12 +48,12 @@ const getSensorReadyState = (snapshot) => {
 const toSensorPayload = (snapshot) =>
   snapshot
     ? {
-        slotId: snapshot.slotId,
-        state: snapshot.state,
-        userId: snapshot.userId || null,
-        remainingMs: snapshot.remainingMs ?? null,
-        receivedAt: snapshot.receivedAt || null,
-      }
+      slotId: snapshot.slotId,
+      state: snapshot.state,
+      userId: snapshot.userId || null,
+      remainingMs: snapshot.remainingMs ?? null,
+      receivedAt: snapshot.receivedAt || null,
+    }
     : null;
 
 const overlapSQL =
@@ -511,6 +511,92 @@ r.post("/:id/cancel", requireAuth, async (req, res) => {
     });
   }
 });
+// --- Apply discount code ---
+r.post("/:id/apply-discount", requireAuth, async (req, res) => {
+  try {
+    const userId = getUserId(req);
+    const { id } = req.params;
+    const { code } = req.body || {};
+
+    if (!code) {
+      return res.status(400).json({
+        message: "กรุณากรอกรหัสส่วนลด"
+      });
+    }
+
+    const { rows: reservationRows } = await pool.query(
+      `
+      SELECT reservation_id
+      FROM reservations
+      WHERE reservation_id=$1
+      AND user_id=$2
+      LIMIT 1
+      `,
+      [id, userId]
+    );
+
+    if (!reservationRows.length) {
+      return res.status(404).json({
+        message: "ไม่พบรายการจอง"
+      });
+    }
+
+    const { rows: codeRows } = await pool.query(
+      `
+      SELECT *
+      FROM discount_codes
+      WHERE code=$1
+      LIMIT 1
+      `,
+      [code]
+    );
+
+    const discount = codeRows[0];
+
+    if (!discount) {
+      return res.status(404).json({
+        message: "ไม่พบรหัสส่วนลด"
+      });
+    }
+
+    if (discount.is_used) {
+      return res.status(400).json({
+        message: "รหัสนี้ถูกใช้งานแล้ว"
+      });
+    }
+
+    await pool.query(
+      `
+      UPDATE discount_codes
+      SET
+      is_used=true,
+      used_by=$1,
+      reservation_id=$2,
+      used_at=NOW()
+      WHERE code_id=$3
+      `,
+      [
+        userId,
+        id,
+        discount.code_id
+      ]
+    );
+
+    return res.json({
+      ok: true,
+      discount_minutes:
+        discount.discount_minutes
+    });
+
+  } catch (err) {
+
+    return res.status(500).json({
+      message: "ใช้รหัสส่วนลดไม่สำเร็จ",
+      error: err.message
+    });
+
+  }
+});
 
 // --- Complete booking / close billing ---
 r.post("/:id/complete", requireAuth, async (req, res) => {
@@ -538,11 +624,38 @@ r.post("/:id/complete", requireAuth, async (req, res) => {
     }
 
     const now = new Date();
-    const totalFee = await computeFee(
-      pool,
-      new Date(rdata.checked_in_at || rdata.start_time),
-      now
-    );
+    const { rows: discountRows } =
+      await pool.query(
+        `
+SELECT
+COALESCE(
+SUM(discount_minutes),
+0
+)
+AS discount_minutes
+FROM discount_codes
+WHERE reservation_id=$1
+AND is_used=true
+`,
+        [id]
+      );
+
+    const discountMinutes =
+      Number(
+        discountRows[0]
+          ?.discount_minutes || 0
+      );
+
+    const totalFee =
+      await computeFee(
+        pool,
+        new Date(
+          rdata.checked_in_at ||
+          rdata.start_time
+        ),
+        now,
+        discountMinutes
+      );
 
     const userId = rdata.user_id;
     const deposit = Number(rdata.deposit_amount || 0);

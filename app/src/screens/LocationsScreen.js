@@ -3,6 +3,7 @@ import {
   SafeAreaView,
   View,
   Text,
+  TextInput,
   Pressable,
   StyleSheet,
   Alert,
@@ -49,8 +50,8 @@ function getSensorLiveRemainingMs(sensor) {
     typeof raw === "number"
       ? raw
       : typeof raw === "string" && raw.trim() !== ""
-      ? Number(raw)
-      : null;
+        ? Number(raw)
+        : null;
 
   if (!Number.isFinite(remainingMs)) return null;
 
@@ -84,6 +85,7 @@ export default function LocationsScreen() {
   const [checkedInAt, setCheckedInAt] = useState(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [feeEstimate, setFeeEstimate] = useState(0);
+  const [discountCode, setDiscountCode] = useState("");
 
   const refreshBookingFromServer = async () => {
     try {
@@ -156,7 +158,7 @@ export default function LocationsScreen() {
         setElapsedSec(0);
         setFeeEstimate(0);
       }
-    } catch (_) {}
+    } catch (_) { }
   };
 
   useEffect(() => {
@@ -181,10 +183,10 @@ export default function LocationsScreen() {
             try {
               const { data: d2 } = await api.get("/bookings/me/current");
               setFeeEstimate(Number(d2?.fee_estimate || 0));
-            } catch {}
+            } catch { }
           }, 60000);
         }
-      } catch {}
+      } catch { }
     })();
 
     return () => {
@@ -252,7 +254,7 @@ export default function LocationsScreen() {
         if (booking?.reservation_id) {
           try {
             await api.post(`/bookings/${booking.reservation_id}/cancel`);
-          } catch (_) {}
+          } catch (_) { }
         }
 
         setUiState("idle");
@@ -322,7 +324,7 @@ export default function LocationsScreen() {
         });
 
         setLocations(Array.from(byLoc.values()));
-      } catch (_) {}
+      } catch (_) { }
     })();
   }, [selectOpen]);
 
@@ -445,11 +447,11 @@ export default function LocationsScreen() {
       setBooking((prev) =>
         prev
           ? {
-              ...prev,
-              status: data?.status || data?.booking?.status || "checked-in",
-              sensor: data?.sensor || data?.booking?.sensor || prev.sensor || null,
-              canCheckIn: false,
-            }
+            ...prev,
+            status: data?.status || data?.booking?.status || "checked-in",
+            sensor: data?.sensor || data?.booking?.sensor || prev.sensor || null,
+            canCheckIn: false,
+          }
           : prev
       );
 
@@ -483,10 +485,48 @@ export default function LocationsScreen() {
       if (booking?.reservation_id) {
         await api.post(`/bookings/${booking.reservation_id}/cancel`);
       }
-    } catch (_) {}
+    } catch (_) { }
 
     setUiState("idle");
     setBooking(null);
+  };
+
+  const handleApplyDiscount = async () => {
+    try {
+
+      if (!discountCode.trim()) {
+        Alert.alert(
+          "แจ้งเตือน",
+          "กรุณากรอกรหัสส่วนลด"
+        );
+        return;
+      }
+
+      await api.post(
+        `/bookings/${booking?.reservation_id}/apply-discount`,
+        {
+          code: discountCode.trim()
+        }
+      );
+
+      Alert.alert(
+        "สำเร็จ",
+        "ใช้รหัสส่วนลดเรียบร้อย"
+      );
+
+      setDiscountCode("");
+
+      await refreshBookingFromServer();
+
+    } catch (e) {
+
+      Alert.alert(
+        "ไม่สำเร็จ",
+        e?.response?.data?.message ||
+        "ใช้รหัสไม่สำเร็จ"
+      );
+
+    }
   };
 
   const handleComplete = async () => {
@@ -603,36 +643,84 @@ export default function LocationsScreen() {
   );
 
   return (
-  <SafeAreaView style={styles.screen}>
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={styles.scrollContent}
-      showsVerticalScrollIndicator={false}
-    >
+    <SafeAreaView style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
 
-      <Header />
+        <Header />
 
-      <Lot />
+        <Lot />
 
-      {uiState !== "idle" && (
-        <Text style={styles.locationLine}>
-          {booking?.location ? `${booking.location}` : "ตำแหน่งที่จอง"}
-          {booking?.floor ? ` • ชั้น ${booking.floor}` : ""}
-          {booking?.pole ? ` • เสา ${booking.pole}` : ""}
-        </Text>
-      )}
+        {uiState !== "idle" && (
+          <Text style={styles.locationLine}>
+            {booking?.location ? `${booking.location}` : "ตำแหน่งที่จอง"}
+            {booking?.floor ? ` • ชั้น ${booking.floor}` : ""}
+            {booking?.pole ? ` • เสา ${booking.pole}` : ""}
+          </Text>
+        )}
 
-      {uiState === "parked" && (
-        <Text style={styles.parkingSummary}>
-          เวลาในการจอด: {fmtDuration(elapsedSec)}
-          {"\n"}
-          ประมาณการ: {feeEstimate.toFixed(2)} บาท
-        </Text>
-      )}
+        {uiState === "parked" && (
+          <View style={{ width: "100%", paddingHorizontal: 20 }}>
 
-      <BottomButtons />
+            <Text style={styles.parkingSummary}>
+              เวลาในการจอด: {fmtDuration(elapsedSec)}
+              {"\n"}
+              ประมาณการ: {feeEstimate.toFixed(2)} บาท
+            </Text>
 
-    </ScrollView>
+            <View style={{ marginTop: 15 }}>
+
+              <Text
+                style={{
+                  fontWeight: "700",
+                  marginBottom: 6
+                }}
+              >
+                รหัสส่วนลด
+              </Text>
+
+              <TextInput
+                value={discountCode}
+                onChangeText={setDiscountCode}
+                placeholder="PARK-XXXX"
+                style={{
+                  borderWidth: 1,
+                  borderColor: "#ccc",
+                  borderRadius: 10,
+                  padding: 12
+                }}
+              />
+
+              <Pressable
+                onPress={handleApplyDiscount}
+                style={{
+                  marginTop: 10,
+                  backgroundColor: ORANGE,
+                  padding: 12,
+                  borderRadius: 10,
+                  alignItems: "center"
+                }}
+              >
+                <Text
+                  style={{
+                    color: "#fff",
+                    fontWeight: "700"
+                  }}
+                >
+                  ใช้รหัส
+                </Text>
+              </Pressable>
+
+            </View>
+          </View>
+        )}
+
+        <BottomButtons />
+
+      </ScrollView>
 
       <Modal visible={floorOpen} transparent animationType="slide" onRequestClose={() => setFloorOpen(false)}>
         <View style={styles.modalBg}>
@@ -778,31 +866,31 @@ export default function LocationsScreen() {
 }
 
 const styles = StyleSheet.create({
-  screen:{
-    flex:1,
-    backgroundColor:"#fff"
+  screen: {
+    flex: 1,
+    backgroundColor: "#fff"
   },
 
-  scroll:{
-  flex:1
+  scroll: {
+    flex: 1
   },
 
-  scrollContent:{
-    alignItems:"center",
-    paddingBottom:120
+  scrollContent: {
+    alignItems: "center",
+    paddingBottom: 120
   },
   topBar: { height: 88, backgroundColor: ORANGE, alignSelf: "stretch" },
   caption: { fontSize: 24, color: ORANGE, fontWeight: "700", marginTop: 10 },
   status: { fontSize: 36, marginTop: 6, fontWeight: "800" },
   subnote: { marginTop: 6, color: "#777", fontWeight: "600" },
 
-  lotBox:{
-    marginTop:8,
-    width:"90%",
-    height:410,
-    borderRadius:6,
-    alignItems:"center",
-    justifyContent:"center",
+  lotBox: {
+    marginTop: 8,
+    width: "90%",
+    height: 410,
+    borderRadius: 6,
+    alignItems: "center",
+    justifyContent: "center",
   },
   hLineTop: { position: "absolute", top: 82, left: 0, right: 0, height: 3, backgroundColor: GRAY, borderRadius: 2 },
   hLineBottom: { position: "absolute", bottom: 46, left: 0, right: 0, height: 3, backgroundColor: GRAY, borderRadius: 2 },
@@ -820,11 +908,11 @@ const styles = StyleSheet.create({
   centerCtaDisabled: { backgroundColor: GRAY, opacity: 0.7 },
   centerCtaText: { color: "#fff", fontWeight: "800", fontSize: 18 },
 
-  carWrap:{ alignItems:"center", justifyContent:"center" },
+  carWrap: { alignItems: "center", justifyContent: "center" },
 
-  carImage:{ width:170, height:280, resizeMode:"contain" },
+  carImage: { width: 170, height: 280, resizeMode: "contain" },
 
-  bottomRow: { width: "100%", flexDirection: "row", justifyContent: "space-between", marginTop:12, paddingHorizontal:16, marginBottom:10 },
+  bottomRow: { width: "100%", flexDirection: "row", justifyContent: "space-between", marginTop: 12, paddingHorizontal: 16, marginBottom: 10 },
   outlineBtn: { flex: 1, borderWidth: 2, borderColor: ORANGE, borderRadius: 12, paddingVertical: 14, alignItems: "center", marginRight: 8 },
   outlineText: { color: ORANGE, fontWeight: "700", fontSize: 16 },
   filledBtn: { flex: 1, backgroundColor: ORANGE, borderRadius: 12, paddingVertical: 14, alignItems: "center", },
@@ -833,9 +921,9 @@ const styles = StyleSheet.create({
   disabledText: { color: GRAY },
   filledDisabled: { backgroundColor: "#D7D7D7" },
 
- locationLine:{ marginTop:8, color:"#444", fontWeight:"700", textAlign:"center", paddingHorizontal:20 },
+  locationLine: { marginTop: 8, color: "#444", fontWeight: "700", textAlign: "center", paddingHorizontal: 20 },
 
- parkingSummary:{ marginTop:6, color:"#444", fontWeight:"700", textAlign:"center", paddingHorizontal:20, lineHeight:24 },
+  parkingSummary: { marginTop: 6, color: "#444", fontWeight: "700", textAlign: "center", paddingHorizontal: 20, lineHeight: 24 },
 
   modalBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.25)", justifyContent: "flex-end" },
   sheet: { backgroundColor: "#fff", padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16, maxHeight: "72%" },
